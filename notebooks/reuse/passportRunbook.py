@@ -8,12 +8,7 @@ import re
 
 # COMMAND ----------
 
-dbutils.secrets.help()
-#dbutils.secrets.get(scope = "aldssecretscope", key = "aldsprincipal")
-
-# COMMAND ----------
-
-# MAGIC %sh pwd
+dbutils.fs.ls("/")
 
 # COMMAND ----------
 
@@ -30,27 +25,136 @@ configs = {"fs.azure.account.auth.type": "OAuth",
 
 # COMMAND ----------
 
-# use this command to run this notebook in others - https://docs.microsoft.com/en-us/azure/databricks/dev-tools/databricks-utils#dbutils-secrets
-# %run /path/to/InstallDependencies  
-%run /reuse/preRunbook
+dbutils.fs.ls("/")
 
 # COMMAND ----------
 
-        ####################### ABOVE SAVE IN NOTEBOOK FOR PRE RUN ##########################
+# JDBC Connection (NOT RAN)
+Class.forName("com.microsoft.sqlserver.jdbc.SQLServerDriver")
+val jdbcHostname = "<hostname>"
+val jdbcPort = 1433
+val jdbcDatabase = "<database>"
+val username = dbutils.secrets.get(scope = "aldssecretscope", key = "aldssqluser")
+val password = dbutils.secrets.get(scope = "aldssecretscope", key = "aldssqlpass")
+
+// Create the JDBC URL without passing in the user and password parameters.
+val jdbcUrl = s"jdbc:sqlserver://${jdbcHostname}:${jdbcPort};database=${jdbcDatabase}"
+
+// Create a Properties() object to hold the parameters.
+import java.util.Properties
+val connectionProperties = new Properties()
+
+connectionProperties.put("user", s"${jdbcUsername}")
+connectionProperties.put("password", s"${jdbcPassword}")
+
+# COMMAND ----------
+
+# spark SQL Connector to tyrion DB
+
+# COMMAND ----------
+
+# MAGIC %scala
+# MAGIC import com.microsoft.azure.sqldb.spark.config.Config
+# MAGIC import com.microsoft.azure.sqldb.spark.connect._
+
+# COMMAND ----------
+
+# MAGIC %scala
+# MAGIC val username = dbutils.secrets.get(scope = "aldssecretscope", key = "aldssqluser")
+# MAGIC val password = dbutils.secrets.get(scope = "aldssecretscope", key = "aldssqlpass")
+# MAGIC 
+# MAGIC val config = Config(Map(
+# MAGIC   "url"            -> "tryrion-sqlsrv.database.windows.net",
+# MAGIC   "databaseName"   -> "tyrion-dw",
+# MAGIC   "dbTable"        -> "SalesLT.ProductDescription",
+# MAGIC   "user"           -> username,
+# MAGIC   "password"       -> password,
+# MAGIC   "connectTimeout" -> "5", //seconds
+# MAGIC   "queryTimeout"   -> "5"  //seconds
+# MAGIC ))
+# MAGIC 
+# MAGIC val collection = sqlContext.read.sqlDB(config)
+# MAGIC collection.show()
+
+# COMMAND ----------
+
+
+
+# COMMAND ----------
+
+# SQL Spark Connector to thanos(my db)
+
+# COMMAND ----------
+
+# MAGIC %scala
+# MAGIC val password = dbutils.secrets.get(scope = "aldssecretscope", key = "aldssqlthanos")
+# MAGIC 
+# MAGIC val config = Config(Map(
+# MAGIC   "url"            -> "testx-sqltom.database.windows.net",
+# MAGIC   "databaseName"   -> "testx-passportdata",
+# MAGIC //  "dbTable"        -> "SalesLT.ProductDescription",
+# MAGIC   "user"           -> "thanos",
+# MAGIC   "password"       -> password,
+# MAGIC   "connectTimeout" -> "5", //seconds
+# MAGIC   "queryTimeout"   -> "5"  //seconds
+# MAGIC ))
+# MAGIC 
+# MAGIC val collection = sqlContext.read.sqlDB(config)
+# MAGIC collection.show()
+
+# COMMAND ----------
+
+# first CosmosDB connection (removed)
+
+# COMMAND ----------
+
+# MAGIC %scala
+# MAGIC import org.joda.time._
+# MAGIC import org.joda.time.format._
+# MAGIC 
+# MAGIC import com.microsoft.azure.cosmosdb.spark.schema._
+# MAGIC import com.microsoft.azure.cosmosdb.spark.CosmosDBSpark
+# MAGIC import com.microsoft.azure.cosmosdb.spark.config.Config
+# MAGIC 
+# MAGIC import org.apache.spark.sql.functions._
+
+# COMMAND ----------
+
+# MAGIC %scala
+# MAGIC // configure the connection to cosmos
+# MAGIC val key = dbutils.secrets.get(scope = "aldssecretscope", key = "aldscosmos")
+# MAGIC val configMap = Map(
+# MAGIC   "Endpoint" -> "https://testx-passportdata.table.cosmos.azure.com:443/",
+# MAGIC   "Masterkey" -> key,
+# MAGIC   "Database" -> "passportSrc",
+# MAGIC  // "Collection" -> "passportRaw",
+# MAGIC   "preferredRegions" -> "East US")
+# MAGIC val config = Config(configMap)
+
+# COMMAND ----------
+
+dbutils.library.installPyPI('azure-cosmosdb-table')
+
+# COMMAND ----------
+
+# MAGIC %scala
+# MAGIC // create sample data and write to cosmos to ensure connection
+# MAGIC val df = spark.range(5).select(col("id").cast("string").as("value"))
+# MAGIC CosmosDBSpark.save(df, config)
 
 # COMMAND ----------
 
 # mount the datalake on DBFS at /mnt/Lake location
 dbutils.fs.mount(
   source = "abfss://passport-raw-src@testxdatalake.dfs.core.windows.net/",
-  mount_point = "/mnt/Cake",
+  mount_point = "/mnt/Pass",
   extra_configs= configs)
 dbutils.fs.ls("/")
 
 # COMMAND ----------
 
-display(dbutils.fs.mounts())
-display(dbutils.fs.ls("/mnt/Cake/sampledata"))
+display(dbutils.fs.ls("/mnt/Pass"))
+
 
 # COMMAND ----------
 
@@ -59,7 +163,29 @@ dbutils.library.installPyPI("xlrd")
 
 # COMMAND ----------
 
-# MAGIC %sh ls
+# sample script (duplicate) to get all workbooks out of LOOK tables file and separate for dataframe/csv creation for each
+excel_file_lookups = pd.ExcelFile("/dbfs/mnt/Pass/Passport Lookup Tables.xlsx")
+worksheets = excel_file_lookups.sheet_names
+print("Names of workbooks ",worksheets)
+# parse if needed here, otherwise drop 1st worksheet since it is index
+# data_sheets = [ x for x in worksheets if re.search('DATA',x,re.IGNORECASE)]
+each_lookup_worksheet = {}
+
+# COMMAND ----------
+
+# loop through lookup workbooks
+for wb in worksheets:
+  each_lookup_worksheet[wb] = pd.read_excel("/dbfs/mnt/Pass/Passport Lookup Tables.xlsx",
+                                                     headers=None,
+                                                     sheet_name=wb)
+
+# COMMAND ----------
+
+# save all dataframes in csv format
+for table in each_lookup_worksheet.keys():
+  filepath = "/dbfs/mnt/Pass/lookupassport/{}.csv".format(table)
+  df = each_lookup_worksheet[table]
+  df.to_csv(filepath, index=False)
 
 # COMMAND ----------
 
@@ -73,10 +199,6 @@ print("Names of workbooks ",worksheets)
 each_data_worksheet = {}
 all_datasheets_df = pd.DataFrame()
 
-
-# COMMAND ----------
-
-print(len(worksheets))
 
 # COMMAND ----------
 
@@ -97,14 +219,10 @@ dimmatter_df.dtypes
 
 # COMMAND ----------
 
-# MAGIC %sh ls
-
-# COMMAND ----------
-
 # save all raw Python passport dataframes just in case
-filepath = "/dbfs/mnt/Cake/sampledata/"
+
 for table in each_data_worksheet.keys():
-  filepath = "/dbfs/mnt/Cake/sampledata/{}.csv".format(table)
+  filepath = "/dbfs/mnt/Pass/sampledata/{}.csv".format(table)
   df = each_data_worksheet[table]
   df.to_csv(filepath, index=False)
 
